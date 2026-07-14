@@ -1,4 +1,4 @@
-# codex-macos-attention
+# notify-codex-attention
 
 Clickable macOS alerts for Codex CLI approvals, decisions, and completed turns
 in iTerm2.
@@ -51,7 +51,7 @@ xcode-select --install
 Replace `YOUR_GITHUB_USERNAME` with your GitHub username:
 
 ```sh
-git clone https://github.com/YOUR_GITHUB_USERNAME/codex-macos-attention.git \
+git clone https://github.com/YOUR_GITHUB_USERNAME/notify-codex-attention.git \
   "${CODEX_HOME:-$HOME/.codex}/skills/notify-codex-attention"
 ```
 
