@@ -1,0 +1,6 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Rebuild locally with `make build`; do not version architecture-specific output.
+scripts/codex-attention-overlay

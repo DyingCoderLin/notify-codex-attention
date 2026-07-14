@@ -1,0 +1,6 @@
+interface:
+  display_name: "Codex Attention Notifications"
+  short_description: "Clickable alert when Codex needs your input"
+  default_prompt: "Use $notify-codex-attention before asking me for approval, input, a decision, or a manual action."
+policy:
+  allow_implicit_invocation: false
