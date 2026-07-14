@@ -11,13 +11,20 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Mapping
 
 
 TITLE = "Codex"
-ITERM_BUNDLE_ID = "com.googlecode.iterm2"
 MAX_MESSAGE_LENGTH = 160
 OVERLAY = Path(__file__).with_name("codex-attention-overlay")
+CURSOR_BUNDLE_ID = "com.todesktop.230313mzl4w4u92"
+TERMINAL_BUNDLE_IDS = {
+    "apple_terminal": "com.apple.Terminal",
+    "cursor": CURSOR_BUNDLE_ID,
+    "ghostty": "com.mitchellh.ghostty",
+    "iterm.app": "com.googlecode.iterm2",
+    "vscode": "com.microsoft.VSCode",
+}
 SUBTITLES = {
     "complete": "任务已完成",
     "attention": "需要你处理",
@@ -68,7 +75,57 @@ def icon_url() -> str | None:
     return path.as_uri() if path else None
 
 
-def notification_commands(kind: str, message: str, session_id: str | None) -> list[tuple[str, list[str]]]:
+def valid_bundle_id(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", value))
+
+
+def canonical_terminal_bundle_id(value: str) -> str | None:
+    if not valid_bundle_id(value):
+        return None
+    for bundle_id in TERMINAL_BUNDLE_IDS.values():
+        if value == bundle_id or value.startswith(bundle_id + "."):
+            return bundle_id
+    return value
+
+
+def source_application_bundle_id(
+    environment: Mapping[str, str] | None = None,
+    override: str | None = None,
+) -> str | None:
+    env = environment if environment is not None else os.environ
+
+    if override:
+        return canonical_terminal_bundle_id(override)
+
+    explicit = env.get("CODEX_ATTENTION_BUNDLE_ID", "").strip()
+    if explicit and (bundle_id := canonical_terminal_bundle_id(explicit)):
+        return bundle_id
+
+    inherited = env.get("__CFBundleIdentifier", "").strip()
+    if inherited and (bundle_id := canonical_terminal_bundle_id(inherited)):
+        return bundle_id
+
+    term_program_raw = env.get("TERM_PROGRAM", "").strip()
+    term_program = term_program_raw.casefold()
+    if term_program == "vscode":
+        cursor_environment = any(
+            (key.startswith("CURSOR_") and bool(value))
+            or (key.startswith("VSCODE_") and "cursor.app" in value.casefold())
+            for key, value in env.items()
+        )
+        return CURSOR_BUNDLE_ID if cursor_environment else TERMINAL_BUNDLE_IDS["vscode"]
+
+    if term_program in TERMINAL_BUNDLE_IDS:
+        return TERMINAL_BUNDLE_IDS[term_program]
+    return canonical_terminal_bundle_id(term_program_raw)
+
+
+def notification_commands(
+    kind: str,
+    message: str,
+    session_id: str | None,
+    activate_bundle: str | None = None,
+) -> list[tuple[str, list[str]]]:
     group_id = re.sub(r"[^0-9A-Za-z_-]", "-", session_id or "current")[:80]
     group = f"codex-attention-{group_id}"
     attempts: list[tuple[str, list[str]]] = []
@@ -84,11 +141,11 @@ def notification_commands(kind: str, message: str, session_id: str | None) -> li
             message,
             "--group",
             group,
-            "--activate",
-            ITERM_BUNDLE_ID,
             "--timeout",
             "18",
         ]
+        if activate_bundle:
+            command.extend(["--activate", activate_bundle])
         if (path := icon_path()) is not None:
             command.extend(["--icon", str(path)])
         attempts.append(("overlay", command))
@@ -108,9 +165,9 @@ def notification_commands(kind: str, message: str, session_id: str | None) -> li
             "-group",
             group,
             "-ignoreDnD",
-            "-activate",
-            ITERM_BUNDLE_ID,
         ]
+        if activate_bundle:
+            command.extend(["-activate", activate_bundle])
         if (icon := icon_url()) is not None:
             command.extend(["-appIcon", icon])
         attempts.append(("terminal-notifier", command))
@@ -133,9 +190,14 @@ def notification_commands(kind: str, message: str, session_id: str | None) -> li
     return attempts
 
 
-def deliver_notification(kind: str, message: str, session_id: str | None) -> tuple[bool, str | None, list[str]]:
+def deliver_notification(
+    kind: str,
+    message: str,
+    session_id: str | None,
+    activate_bundle: str | None,
+) -> tuple[bool, str | None, list[str]]:
     errors: list[str] = []
-    for backend, command in notification_commands(kind, message, session_id):
+    for backend, command in notification_commands(kind, message, session_id, activate_bundle):
         if backend == "overlay":
             try:
                 subprocess.Popen(
@@ -203,6 +265,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--kind", choices=tuple(SUBTITLES), default="attention")
     parser.add_argument("--message", help="Short user-facing task summary")
     parser.add_argument("--session-id", help="Identifier used to replace duplicate session alerts")
+    parser.add_argument("--activate-bundle", help="Override the originating macOS application bundle ID")
     parser.add_argument("--dry-run", action="store_true", help="Print the resolved notification without sending")
     return parser.parse_args(argv)
 
@@ -238,7 +301,13 @@ def main(argv: list[str] | None = None) -> int:
 
     kind, message, session_id = details
     message = clean_message(message, "Codex 需要你处理当前任务" if kind == "attention" else "Codex 已完成当前任务")
-    attempts = notification_commands(kind, message, str(session_id) if session_id else None)
+    activate_bundle = source_application_bundle_id(override=args.activate_bundle)
+    attempts = notification_commands(
+        kind,
+        message,
+        str(session_id) if session_id else None,
+        activate_bundle,
+    )
 
     if args.dry_run:
         print(json.dumps({
@@ -246,13 +315,18 @@ def main(argv: list[str] | None = None) -> int:
             "title": TITLE,
             "subtitle": SUBTITLES[kind],
             "message": message,
-            "activate": ITERM_BUNDLE_ID,
+            "activate": activate_bundle,
             "command": attempts[0][1],
             "fallbacks": [name for name, _ in attempts[1:]],
         }, ensure_ascii=False, indent=2))
         return 0
 
-    delivered, _, errors = deliver_notification(kind, message, str(session_id) if session_id else None)
+    delivered, _, errors = deliver_notification(
+        kind,
+        message,
+        str(session_id) if session_id else None,
+        activate_bundle,
+    )
     if not delivered:
         print("notify-codex-attention: " + "; ".join(errors), file=sys.stderr)
 

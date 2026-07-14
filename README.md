@@ -1,18 +1,18 @@
 # notify-codex-attention
 
 Clickable macOS alerts for Codex CLI approvals, decisions, and completed turns
-in iTerm2.
+across terminal applications.
 
 Codex can run for a while before it needs you. This skill shows a native-looking
 alert in the upper-right corner of the active display, summarizes the action,
-and takes you back to iTerm2 when clicked.
+and takes you back to the application that launched that Codex CLI when clicked.
 
 ## Features
 
 - Alerts when Codex needs approval, a choice, text input, or a manual UI action
 - Completion alerts from the global Codex `notify` callback
 - No alerts for ordinary tool calls or file writes while a turn is still running
-- Click-to-activate iTerm2
+- Click-to-activate the originating terminal application
 - Separate **Needs attention** and **Task complete** states
 - Replaces older alerts from the same Codex thread
 - Native AppKit overlay that does not depend on Notification Center banners
@@ -29,15 +29,22 @@ There are three notification paths:
 3. A short global `AGENTS.md` rule tells Codex to invoke the skill before a
    mid-turn choice, requested input, or manual UI action.
 
-The Python script classifies the event and launches a small AppKit overlay. The
-overlay is compiled locally from the included Swift source, so the repository
-does not ship an architecture-specific binary.
+The Python script classifies the event and captures the host application's
+inherited macOS bundle ID before launching a small AppKit overlay. That target
+is frozen into the alert; clicking does not guess from the most recently used
+application. The overlay is compiled locally from the included Swift source,
+so the repository does not ship an architecture-specific binary.
+
+Known fallbacks cover iTerm2, Cursor, Visual Studio Code, Ghostty, and Apple
+Terminal. Other macOS terminal hosts work automatically when they export
+`__CFBundleIdentifier`; an explicit `--activate-bundle` override is also
+available.
 
 ## Requirements
 
 - macOS
-- iTerm2
 - Codex CLI
+- A macOS terminal application or IDE-integrated terminal
 - Xcode Command Line Tools (`swiftc`)
 
 Install the command-line tools if `swiftc` is unavailable:
@@ -148,7 +155,20 @@ cd "${CODEX_HOME:-$HOME/.codex}/skills/notify-codex-attention"
   --session-id "manual-test"
 ```
 
-Click the alert and confirm that iTerm2 becomes active.
+Click the alert and confirm that the application containing the originating
+Codex CLI becomes active.
+
+Inspect host routing without displaying an alert:
+
+```sh
+env __CFBundleIdentifier=com.todesktop.230313mzl4w4u92 \
+  /usr/bin/python3 scripts/notify.py \
+  --kind attention --message "Cursor route" --dry-run
+```
+
+The `activate` field should equal the supplied bundle ID. Use
+`--activate-bundle com.example.Terminal` only when a terminal host does not
+export usable environment metadata.
 
 Test completion-event routing without displaying an alert:
 

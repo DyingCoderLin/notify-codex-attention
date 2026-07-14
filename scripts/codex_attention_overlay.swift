@@ -37,7 +37,7 @@ let titleText = argument("--title", default: "Codex")
 let subtitleText = argument("--subtitle", default: "需要你处理")
 let messageText = argument("--message", default: "Codex 需要你返回处理当前任务")
 let iconPath = argument("--icon", default: "/Applications/ChatGPT.app/Contents/Resources/icon-codex-dark-color.png")
-let activateBundle = argument("--activate", default: "com.googlecode.iterm2")
+let activateBundle = argument("--activate", default: "")
 let group = argument("--group", default: "current").replacingOccurrences(
     of: "[^0-9A-Za-z_-]",
     with: "-",
@@ -115,10 +115,19 @@ NSLayoutConstraint.activate([
 ])
 
 card.onClick = {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    process.arguments = ["-b", activateBundle]
-    try? process.run()
+    if !activateBundle.isEmpty {
+        let running = NSRunningApplication.runningApplications(
+            withBundleIdentifier: activateBundle
+        )
+        if let target = running.first(where: { !$0.isTerminated }) {
+            target.activate(options: [.activateAllWindows])
+        } else {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            process.arguments = ["-b", activateBundle]
+            try? process.run()
+        }
+    }
     app.terminate(nil)
 }
 

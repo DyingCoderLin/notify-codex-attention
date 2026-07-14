@@ -1,6 +1,6 @@
 ---
 name: notify-codex-attention
-description: Show a clickable native macOS alert immediately before Codex pauses mid-turn in iTerm2 for a choice, requested input, or a manual UI action not represented by a Codex permission event.
+description: Show a clickable native macOS alert that returns to the application hosting Codex CLI before Codex pauses mid-turn for a choice, requested input, or a manual UI action not represented by a Codex permission event.
 ---
 
 # Notify Codex Attention
@@ -18,6 +18,7 @@ and at most 160 characters. Do not call it for permission approvals or a final
 response: the `PermissionRequest` hook owns approvals, while the global `notify`
 callback owns final questions and completed turns.
 
-The script shows a clickable Codex overlay that activates iTerm2, with
+The script captures the originating terminal application's bundle ID and shows a
+clickable Codex overlay that returns to that application, with
 `terminal-notifier` and AppleScript fallbacks. Never block the main task if
 delivery fails.
