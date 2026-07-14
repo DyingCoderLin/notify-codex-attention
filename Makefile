@@ -13,8 +13,10 @@ $(OVERLAY): $(SOURCE)
 
 check: build
 	$(PYTHON) -m py_compile scripts/notify.py
+	$(PYTHON) -m unittest discover -s tests -v
 	$(PYTHON) scripts/notify.py --kind attention --message "Repository check" --session-id "repo-check" --dry-run
 
 clean:
 	rm -f $(OVERLAY)
 	rm -rf scripts/__pycache__
+	rm -rf tests/__pycache__

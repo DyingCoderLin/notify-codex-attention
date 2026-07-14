@@ -181,18 +181,10 @@ def permission_request_details(event: dict[str, Any]) -> tuple[str, str, str | N
     return "attention", clean_message(description, fallback), event.get("session_id")
 
 
-def stop_details(event: dict[str, Any]) -> tuple[str, str, str | None]:
-    message = clean_message(event.get("last_assistant_message"), "Codex 已完成当前任务")
-    kind = "attention" if needs_attention(message) else "complete"
-    return kind, message, event.get("session_id")
-
-
 def hook_event_details(event: dict[str, Any]) -> tuple[str, str, str | None] | None:
     event_name = event.get("hook_event_name")
     if event_name == "PermissionRequest":
         return permission_request_details(event)
-    if event_name == "Stop":
-        return stop_details(event)
     return None
 
 
