@@ -1,11 +1,35 @@
-# Codex Attention Notifications
+# codex-macos-attention
 
-A personal Codex skill for clickable, native-looking macOS alerts when Codex
-needs input or finishes a turn in iTerm2.
+Clickable macOS alerts for Codex CLI approvals, decisions, and completed turns
+in iTerm2.
 
-The primary backend is a small AppKit overlay. Clicking it activates iTerm2. If
-the overlay is unavailable, the notifier falls back to `terminal-notifier` and
-then AppleScript.
+Codex can run for a while before it needs you. This skill shows a native-looking
+alert in the upper-right corner of the active display, summarizes the action,
+and takes you back to iTerm2 when clicked.
+
+## Features
+
+- Alerts when Codex needs approval, a choice, text input, or a manual UI action
+- Completion alerts from the global Codex `notify` callback
+- Click-to-activate iTerm2
+- Separate **Needs attention** and **Task complete** states
+- Replaces older alerts from the same Codex thread
+- Native AppKit overlay that does not depend on Notification Center banners
+- `terminal-notifier` and AppleScript fallbacks
+- No daemon, network service, or Python package dependencies
+
+## How it works
+
+There are two notification paths:
+
+1. Codex's global `notify` callback sends completed turns and final questions to
+   `scripts/notify.py`.
+2. A short global `AGENTS.md` rule tells Codex to invoke the skill immediately
+   before a mid-turn pause that needs your attention.
+
+The Python script classifies the event and launches a small AppKit overlay. The
+overlay is compiled locally from the included Swift source, so the repository
+does not ship an architecture-specific binary.
 
 ## Requirements
 
@@ -14,53 +38,84 @@ then AppleScript.
 - Codex CLI
 - Xcode Command Line Tools (`swiftc`)
 
-## Install
-
-Clone the repository into the global skills directory and build the local
-overlay:
+Install the command-line tools if `swiftc` is unavailable:
 
 ```sh
-git clone <your-repository-url> ~/.codex/skills/notify-codex-attention
-cd ~/.codex/skills/notify-codex-attention
-make build
+xcode-select --install
 ```
 
-Add the notifier to `~/.codex/config.toml`, replacing `/Users/YOU` with the
-absolute path to your home directory:
+## Installation
+
+### 1. Clone the skill
+
+Replace `YOUR_GITHUB_USERNAME` with your GitHub username:
+
+```sh
+git clone https://github.com/YOUR_GITHUB_USERNAME/codex-macos-attention.git \
+  "${CODEX_HOME:-$HOME/.codex}/skills/notify-codex-attention"
+```
+
+### 2. Build the native overlay
+
+```sh
+make -C "${CODEX_HOME:-$HOME/.codex}/skills/notify-codex-attention" build
+```
+
+This creates `scripts/codex-attention-overlay` for the current Mac architecture.
+The generated binary is ignored by Git.
+
+### 3. Configure completed-turn notifications
+
+Open `~/.codex/config.toml` and add the following entry. TOML does not expand
+`~` or `$HOME`, so use the real absolute path to your home directory:
 
 ```toml
 notify = ["/usr/bin/python3", "/Users/YOU/.codex/skills/notify-codex-attention/scripts/notify.py"]
 ```
 
-If another tool already owns the Codex `notify` callback, configure that tool to
-chain this script instead of defining a second `notify` key.
+Codex supports one global `notify` command. If another application already owns
+that setting, configure it to chain this script instead of adding a second
+`notify` key.
 
-For mid-turn approval and input alerts, add this rule to a global `AGENTS.md`:
+### 4. Enable mid-turn attention alerts
+
+Add this rule to `~/.codex/AGENTS.md`:
 
 ```md
 - Before a mid-turn approval, decision, input, or manual-action pause, use `$notify-codex-attention`; the global `notify` callback handles final questions and completed turns.
 ```
 
-The first native notification may require a narrowly scoped Codex approval for
-the Python script. macOS may also ask for Automation permission when the fallback
-backends are used.
+Restart Codex after changing the global configuration.
 
-## Verify
+## Permissions
 
-Run the reproducible checks:
+The primary overlay does not need broad macOS notification access. On first use,
+Codex may ask for permission to run the notifier outside its sandbox. Approve
+only the narrow command prefix containing both `/usr/bin/python3` and the
+absolute path to `scripts/notify.py`.
+
+The optional AppleScript and `terminal-notifier` fallbacks may prompt for their
+own macOS permissions.
+
+## Verify the installation
+
+Run the build and deterministic checks:
 
 ```sh
-make check
+make -C "${CODEX_HOME:-$HOME/.codex}/skills/notify-codex-attention" check
 ```
 
 Send a live attention alert:
 
 ```sh
+cd "${CODEX_HOME:-$HOME/.codex}/skills/notify-codex-attention"
 /usr/bin/python3 scripts/notify.py \
   --kind attention \
   --message "Please return to Codex" \
   --session-id "manual-test"
 ```
+
+Click the alert and confirm that iTerm2 becomes active.
 
 Test completion-event routing without displaying an alert:
 
@@ -70,12 +125,38 @@ Test completion-event routing without displaying an alert:
   --dry-run
 ```
 
+The resolved subtitle should be `任务已完成` and the selected backend should be
+`overlay`.
+
+## Update
+
+```sh
+git -C "${CODEX_HOME:-$HOME/.codex}/skills/notify-codex-attention" pull --ff-only
+make -C "${CODEX_HOME:-$HOME/.codex}/skills/notify-codex-attention" build
+```
+
+## Uninstall
+
+Remove the `notify` entry from `~/.codex/config.toml`, remove the matching rule
+from `~/.codex/AGENTS.md`, and then delete the cloned skill directory.
+
 ## Repository layout
 
-- `SKILL.md`: Codex skill instructions
-- `agents/openai.yaml`: skill UI and invocation policy
-- `scripts/notify.py`: event parsing and backend selection
-- `scripts/codex_attention_overlay.swift`: native clickable overlay source
-- `Makefile`: local build and checks
+```text
+.
+├── SKILL.md
+├── agents/
+│   └── openai.yaml
+├── scripts/
+│   ├── codex_attention_overlay.swift
+│   └── notify.py
+└── Makefile
+```
 
-The compiled overlay is intentionally ignored because it is architecture-specific.
+## Development
+
+```sh
+make build   # compile the AppKit overlay
+make check   # compile, check Python syntax, and run a dry-run route test
+make clean   # remove generated local artifacts
+```
