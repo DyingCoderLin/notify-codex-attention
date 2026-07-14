@@ -35,10 +35,24 @@ is frozen into the alert; clicking does not guess from the most recently used
 application. The overlay is compiled locally from the included Swift source,
 so the repository does not ship an architecture-specific binary.
 
-Known fallbacks cover iTerm2, Cursor, Visual Studio Code, Ghostty, and Apple
-Terminal. Other macOS terminal hosts work automatically when they export
-`__CFBundleIdentifier`; an explicit `--activate-bundle` override is also
-available.
+## Supported terminal hosts
+
+The notifier targets the application that owns the originating Codex CLI. It
+does not inspect or activate the frontmost or most recently used application.
+
+| Host | Bundle ID | Detection |
+| --- | --- | --- |
+| iTerm2 | `com.googlecode.iterm2` | Inherited bundle ID or `TERM_PROGRAM=iTerm.app` |
+| Cursor | `com.todesktop.230313mzl4w4u92` | Inherited bundle ID or Cursor-flavored VS Code environment |
+| Visual Studio Code | `com.microsoft.VSCode` | Inherited bundle ID or `TERM_PROGRAM=vscode` |
+| Ghostty | `com.mitchellh.ghostty` | Inherited bundle ID or `TERM_PROGRAM=ghostty` |
+| Apple Terminal | `com.apple.Terminal` | Inherited bundle ID or `TERM_PROGRAM=Apple_Terminal` |
+| Other macOS hosts | Host-provided value | Inherited `__CFBundleIdentifier` |
+
+The captured bundle ID is frozen into each alert at creation time. Clicking the
+alert activates that running application, even if another app becomes active in
+the meantime. For a host that does not export usable metadata, pass an explicit
+`--activate-bundle com.example.Terminal` override.
 
 ## Requirements
 
