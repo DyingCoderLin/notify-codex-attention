@@ -102,7 +102,7 @@ class EventRoutingTests(unittest.TestCase):
                     notify.hook_event_details({"hook_event_name": event_name})
                 )
 
-    def test_final_choice_needs_attention(self) -> None:
+    def test_final_choice_is_reply_ended_not_guessed_attention(self) -> None:
         event = {
             "type": "agent-turn-complete",
             "thread-id": "choice-test",
@@ -110,7 +110,7 @@ class EventRoutingTests(unittest.TestCase):
         }
         self.assertEqual(
             notify.legacy_event_details(event),
-            ("attention", "请选择方案 A 或方案 B？", "choice-test"),
+            ("complete", "请选择方案 A 或方案 B？", "choice-test"),
         )
 
     def test_completed_turn_is_complete(self) -> None:

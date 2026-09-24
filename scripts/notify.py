@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import time
+from event_queue import EventQueue, input_tool
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 from typing import Any, Mapping
@@ -26,15 +30,9 @@ TERMINAL_BUNDLE_IDS = {
     "vscode": "com.microsoft.VSCode",
 }
 SUBTITLES = {
-    "complete": "任务已完成",
+    "complete": "本轮回复已结束",
     "attention": "需要你处理",
 }
-ATTENTION_PATTERNS = (
-    r"[?？]\s*$",
-    r"(?:请|需要你|麻烦你).{0,24}(?:选择|确认|决定|点击|输入|回复|批准|允许)",
-    r"(?:是否|要不要|可以吗|同意吗|yes\s*/?\s*no)",
-    r"(?:choose|select|confirm|approve|allow|permission|your input|required action)",
-)
 ICON_CANDIDATES = (
     "/Applications/ChatGPT.app/Contents/Resources/icon-codex-dark-color.png",
     "/Applications/ChatGPT.app/Contents/Resources/icon-codex-light.png",
@@ -56,10 +54,6 @@ def clean_message(value: Any, fallback: str) -> str:
     if len(text) > MAX_MESSAGE_LENGTH:
         text = text[: MAX_MESSAGE_LENGTH - 1].rstrip() + "…"
     return text
-
-
-def needs_attention(message: str) -> bool:
-    return any(re.search(pattern, message, flags=re.IGNORECASE) for pattern in ATTENTION_PATTERNS)
 
 
 def icon_path() -> Path | None:
@@ -190,45 +184,6 @@ def notification_commands(
     return attempts
 
 
-def deliver_notification(
-    kind: str,
-    message: str,
-    session_id: str | None,
-    activate_bundle: str | None,
-) -> tuple[bool, str | None, list[str]]:
-    errors: list[str] = []
-    for backend, command in notification_commands(kind, message, session_id, activate_bundle):
-        if backend == "overlay":
-            try:
-                subprocess.Popen(
-                    command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-                return True, backend, errors
-            except OSError as exc:
-                errors.append(f"{backend}: {exc}")
-                continue
-        try:
-            result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=10)
-        except (OSError, subprocess.SubprocessError) as exc:
-            errors.append(f"{backend}: {exc}")
-            continue
-
-        output = "\n".join(part for part in (result.stderr, result.stdout) if part).strip()
-        connection_failed = backend == "applescript" and re.search(
-            r"connection (?:invalid|to notification center invalid)|ServerConnectionFailure",
-            output,
-            flags=re.IGNORECASE,
-        )
-        if result.returncode == 0 and not connection_failed:
-            return True, backend, errors
-        errors.append(f"{backend}: {output or f'exit {result.returncode}'}")
-    return False, None, errors
-
-
 def permission_request_details(event: dict[str, Any]) -> tuple[str, str, str | None]:
     tool_name = str(event.get("tool_name") or "tool")
     tool_input = event.get("tool_input")
@@ -247,20 +202,36 @@ def hook_event_details(event: dict[str, Any]) -> tuple[str, str, str | None] | N
     event_name = event.get("hook_event_name")
     if event_name == "PermissionRequest":
         return permission_request_details(event)
+    if event_name == "PreToolUse" and input_tool(event):
+        arguments = event.get("tool_input") or {}
+        if not isinstance(arguments, dict):
+            return None
+        questions = arguments.get("questions")
+        if not isinstance(questions, list) or not questions:
+            return None
+        question = questions[0] if isinstance(questions[0], dict) else {}
+        return "attention", clean_message(question.get("question") or question.get("title"), "Codex 等待你回答问题"), event.get("session_id")
+    if event_name == "Stop":
+        message = event.get("last_assistant_message")
+        if isinstance(message, str) and message.strip():
+            return "complete", clean_message(message, "本轮回复已结束"), event.get("session_id")
     return None
 
 
 def legacy_event_details(event: dict[str, Any]) -> tuple[str, str, str | None] | None:
     if event.get("type") != "agent-turn-complete":
         return None
-    message = clean_message(event.get("last-assistant-message"), "Codex 已完成当前任务")
-    kind = "attention" if needs_attention(message) else "complete"
-    return kind, message, event.get("thread-id")
+    raw = event.get("last-assistant-message")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    message = clean_message(raw, "本轮回复已结束")
+    return "complete", message, event.get("thread-id")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("payload", nargs="?", help="Legacy Codex notify JSON payload")
+    parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--hook", action="store_true", help="Read a Codex lifecycle-hook event from stdin")
     parser.add_argument("--kind", choices=tuple(SUBTITLES), default="attention")
     parser.add_argument("--message", help="Short user-facing task summary")
@@ -279,8 +250,57 @@ def load_json(raw: str, source: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def drain_queue() -> int:
+    queue = EventQueue()
+    # Blocking lock is intentional: a producer racing with the previous worker's
+    # exit always gets another drain pass. UI children must not inherit this lock.
+    with (queue.directory / "worker.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with queue.db:
+            queue.db.execute("UPDATE events SET status='pending' WHERE status='showing' AND attempts<2")
+            queue.db.execute("UPDATE events SET status='failed' WHERE status='showing'")
+        while True:
+            row = queue.next_event()
+            if row is None:
+                break
+            if row['ready'] > time.time():
+                time.sleep(min(.2, row['ready'] - time.time()))
+                continue
+            with queue.db:
+                queue.db.execute("UPDATE events SET status='showing', attempts=attempts+1 WHERE key=? AND status='pending'", (row['key'],))
+            payload = json.loads(row['payload'])
+            delivered = False
+            for backend, command in notification_commands(payload['kind'], payload['message'], payload['session'], payload['bundle']):
+                if queue.status(row['key']) == 'cancelled':
+                    break
+                try:
+                    child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    deadline = time.monotonic() + (22 if backend == 'overlay' else 10)
+                    while child.poll() is None:
+                        if queue.status(row['key']) == 'cancelled' or time.monotonic() > deadline:
+                            child.terminate()
+                            try:
+                                child.wait(timeout=1)
+                            except subprocess.TimeoutExpired:
+                                child.kill()
+                                child.wait()
+                            break
+                        time.sleep(.1)
+                    delivered = child.returncode == 0
+                    if delivered:
+                        break
+                except OSError:
+                    continue
+            queue.finish(row['key'], 'delivered' if delivered else 'failed')
+    queue.db.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv or sys.argv[1:])
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.worker:
+        return drain_queue()
+    event = {}
     hook_mode = args.hook
     details: tuple[str, str, str | None] | None = None
 
@@ -291,8 +311,29 @@ def main(argv: list[str] | None = None) -> int:
         event = load_json(args.payload, "notify")
         details = legacy_event_details(event) if event else None
     else:
-        fallback = "Codex 需要你返回处理当前任务" if args.kind == "attention" else "Codex 已完成当前任务"
+        fallback = "Codex 需要你返回处理当前任务" if args.kind == "attention" else "Codex 本轮回复已结束"
         details = (args.kind, clean_message(args.message, fallback), args.session_id or os.environ.get("CODEX_THREAD_ID"))
+
+    if (args.hook or args.payload) and not event:
+        if hook_mode:
+            print("{}")
+        return 0
+    activate_bundle = source_application_bundle_id(override=args.activate_bundle)
+    if not args.dry_run:
+        if not args.hook and not args.payload:
+            event = {"session_id": details[2], "cwd": os.getcwd()}
+        queue = EventQueue()
+        try:
+            added = queue.ingest(event or {}, details, activate_bundle)
+            if added:
+                subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--worker"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        finally:
+            queue.db.close()
+        if hook_mode:
+            print("{}")
+        return 0
 
     if details is None:
         if hook_mode:
@@ -300,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     kind, message, session_id = details
-    message = clean_message(message, "Codex 需要你处理当前任务" if kind == "attention" else "Codex 已完成当前任务")
+    message = clean_message(message, "Codex 需要你处理当前任务" if kind == "attention" else "Codex 本轮回复已结束")
     activate_bundle = source_application_bundle_id(override=args.activate_bundle)
     attempts = notification_commands(
         kind,
@@ -321,20 +362,14 @@ def main(argv: list[str] | None = None) -> int:
         }, ensure_ascii=False, indent=2))
         return 0
 
-    delivered, _, errors = deliver_notification(
-        kind,
-        message,
-        str(session_id) if session_id else None,
-        activate_bundle,
-    )
-    if not delivered:
-        print("notify-codex-attention: " + "; ".join(errors), file=sys.stderr)
-
-    if hook_mode:
-        print("{}")
-        return 0
-    return 0 if delivered else 1
+    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        print(f"notify-codex-attention: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if "--hook" in sys.argv:
+            print("{}")
+        raise SystemExit(0 if "--hook" in sys.argv else 1)

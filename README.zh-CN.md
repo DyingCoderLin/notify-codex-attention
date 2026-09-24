@@ -31,11 +31,17 @@ Codex 最适合在后台持续工作，真正影响效率的往往是人机交�
 
 ## 工作原理
 
-三条事件路径共用同一个通知脚本：
+生命周期事件进入持久化串行队列：
 
-1. 全局 Codex `notify` 回调负责一轮结束和最终提问。
-2. `PermissionRequest` hook 负责真实权限审批。
-3. 一条精简的全局 `AGENTS.md` 规则负责中途选择、请求输入和手动 UI 操作。
+1. `PermissionRequest` 负责真实审批；输入工具的 `PreToolUse` 负责问题提醒。
+2. `Stop` 负责本轮回复结束；兼容原来的 `notify` 回调，按 session + turn 去重。
+   不再根据正文里的“确认、允许、yes/no”等词猜测用户是否需要操作。
+3. 新轮次、打断、会话退出、同步输入返回会取消过期提醒；skill 手动调用仅用于
+   没有对应 hook 的实际等待。
+
+多个会话排队显示，不再互相遮挡；每条带项目和会话标识。Stop 仍可能被其他 hook
+要求继续，因此使用短延迟降低提前提醒，不能据此断言整个任务成功完成。
+具体边界见[事件说明](references/event-routing.md)。
 
 创建浮窗时，脚本会读取承载当前 Codex CLI 的应用所继承的 macOS bundle ID，并把目标
 固定在这条浮窗中。因此，点击时不会根据当前前台应用或最近使用的应用进行猜测。macOS
@@ -89,40 +95,25 @@ Codex 只支持一个全局 `notify` 命令。如果该配置已经被其他应�
 脚本，而不要添加第二个 `notify`。关闭 TUI 内建通知可以避免重复浮窗，不会关闭外部回调
 或生命周期 hook。
 
-### 4. 配置权限审批提醒
+### 4. 配置生命周期 hooks
 
-创建 `~/.codex/hooks.json` 并写入以下内容。如果文件已经存在，请把
-`PermissionRequest` 合并进现有的 `hooks` 对象，不要覆盖原文件。请把 `/Users/YOU`
-替换为主目录绝对路径：
+预览后合并，保留其他 hooks，并自动备份：
 
-```json
-{
-  "hooks": {
-    "PermissionRequest": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/bin/python3 \"/Users/YOU/.codex/skills/notify-codex-attention/scripts/notify.py\" --hook",
-            "timeout": 10,
-            "statusMessage": "Sending Codex attention notification"
-          }
-        ]
-      }
-    ]
-  }
-}
+```sh
+/usr/bin/python3 "$HOME/.codex/skills/notify-codex-attention/scripts/install_hooks.py"
+/usr/bin/python3 "$HOME/.codex/skills/notify-codex-attention/scripts/install_hooks.py" --apply
 ```
 
-重启 Codex，运行 `/hooks`，然后信任这条准确的 hook 定义。Codex 会根据 hook 哈希记录
-信任；定义发生变化时，需要重新审核。
+在 Codex 中运行 `/hooks` 审核并信任新增定义，然后重新打开已有会话。安装器不会
+修改信任哈希。若客户端有独立 CODEX_HOME，还需用 `--codex-home /绝对路径`
+安装到该目录；它们共用同一用户的提醒队列。
 
 ### 5. 配置选择和输入提醒
 
 在 `~/.codex/AGENTS.md` 中加入：
 
 ```md
-- Before a mid-turn choice, requested input, or manual UI action, use `$notify-codex-attention`. Do not call it for permission approvals or final responses; the `PermissionRequest` hook and global `notify` callback own those.
+- Use `$notify-codex-attention` only for a required manual UI action or plain-text question without a supported input hook. Installed hooks own permission approvals, structured input requests, and reply completion; do not send duplicate manual alerts. Use the actual thread ID, never a shared placeholder.
 ```
 
 修改全局配置后请重启 Codex。
@@ -175,8 +166,7 @@ make -C "${CODEX_HOME:-$HOME/.codex}/skills/notify-codex-attention" build
 
 ## 卸载
 
-删除 `~/.codex/config.toml` 中的 `notify` 配置、`~/.codex/hooks.json` 中的
-`PermissionRequest` 配置，以及 `~/.codex/AGENTS.md` 中对应的规则，然后删除 Skill
+仅移除 `~/.codex/config.toml` 的 `notify` 链中本提醒脚本，以及 `~/.codex/hooks.json` 中本脚本的生命周期 配置，以及 `~/.codex/AGENTS.md` 中对应的规则，然后删除 Skill
 目录。
 
 ## 仓库结构

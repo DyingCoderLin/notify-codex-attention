@@ -34,12 +34,18 @@ notification—it removes forgotten waiting time from the Codex workflow.
 
 ## How it works
 
-Three paths feed the same notifier:
+Lifecycle events feed a persistent, serialized queue:
 
-1. A global Codex `notify` callback handles completed turns and final questions.
-2. A `PermissionRequest` hook handles real approval prompts.
-3. A short global `AGENTS.md` rule handles mid-turn choices, requested input,
-   and manual UI actions.
+1. `PermissionRequest` handles actual approvals; input-tool `PreToolUse` handles questions.
+2. `Stop` handles reply endings. The legacy `notify` callback is retained and
+   deduplicated by session + turn; prose keywords never imply approval.
+3. `UserPromptSubmit`, `Interrupt`, `SessionEnd`, and synchronous input return
+   cancel obsolete alerts. A manual skill call is only a fallback for unsupported pauses.
+
+Multiple sessions queue rather than covering each other's overlays. Each alert
+shows its project and session. Stop is a stopping attempt, not proof of successful
+completion; a short debounce reduces premature alerts if another hook continues.
+See [event routing](references/event-routing.md) for exact semantics and limitations.
 
 When an alert is created, the notifier captures the macOS bundle ID inherited
 from the application hosting that Codex CLI. The target is frozen into the
@@ -96,40 +102,26 @@ that setting, configure it to chain this script instead of adding a second
 `notify` key. Disabling built-in TUI notifications prevents duplicate alerts;
 it does not disable the external callback or lifecycle hooks.
 
-### 4. Configure approval alerts
+### 4. Configure lifecycle hooks
 
-Create `~/.codex/hooks.json` with the following content. If the file already
-exists, merge the `PermissionRequest` entry into its existing `hooks` object.
-Replace `/Users/YOU` with your absolute home directory:
+Preview and merge the hooks without replacing unrelated entries:
 
-```json
-{
-  "hooks": {
-    "PermissionRequest": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/usr/bin/python3 \"/Users/YOU/.codex/skills/notify-codex-attention/scripts/notify.py\" --hook",
-            "timeout": 10,
-            "statusMessage": "Sending Codex attention notification"
-          }
-        ]
-      }
-    ]
-  }
-}
+```sh
+/usr/bin/python3 "$HOME/.codex/skills/notify-codex-attention/scripts/install_hooks.py"
+/usr/bin/python3 "$HOME/.codex/skills/notify-codex-attention/scripts/install_hooks.py" --apply
 ```
 
-Restart Codex, run `/hooks`, and trust the exact hook definition. Codex records
-trust against the hook hash and asks for review again if the definition changes.
+Run `/hooks` in Codex and review/trust the new definitions, then reopen existing
+sessions. Trust hashes are never changed by the installer. If a client uses an
+isolated CODEX_HOME, install into that home too (`--codex-home /absolute/path`).
+The per-user notification queue is shared across these homes.
 
 ### 5. Configure choice and input alerts
 
 Add this rule to `~/.codex/AGENTS.md`:
 
 ```md
-- Before a mid-turn choice, requested input, or manual UI action, use `$notify-codex-attention`. Do not call it for permission approvals or final responses; the `PermissionRequest` hook and global `notify` callback own those.
+- Use `$notify-codex-attention` only for a required manual UI action or plain-text question without a supported input hook. Installed hooks own permission approvals, structured input requests, and reply completion; do not send duplicate manual alerts. Use the actual thread ID, never a shared placeholder.
 ```
 
 Restart Codex after changing the global configuration.
@@ -186,7 +178,7 @@ make -C "${CODEX_HOME:-$HOME/.codex}/skills/notify-codex-attention" build
 
 ## Uninstall
 
-Remove the `notify` entry from `~/.codex/config.toml`, the `PermissionRequest`
+Remove only this notifier from the `notify` chain in `~/.codex/config.toml`, its lifecycle
 entry from `~/.codex/hooks.json`, and the matching rule from
 `~/.codex/AGENTS.md`. Then delete the cloned skill directory.
 

@@ -1,24 +1,39 @@
 ---
 name: notify-codex-attention
-description: Show a clickable native macOS alert that returns to the application hosting Codex CLI before Codex pauses mid-turn for a choice, requested input, or a manual UI action not represented by a Codex permission event.
+description: Maintain Codex macOS attention notifications, or send a fallback alert when Codex must pause for a manual UI action or plain-text question that is not represented by an installed input hook.
 ---
 
 # Notify Codex Attention
 
-Before a mid-turn pause for a choice, requested input, or manual UI action, run
-this outside the sandbox, then issue the request:
+Installed hooks own permission approvals (`PermissionRequest`), supported structured
+input tools (`PreToolUse` for `request_user_input` / `request_user_input_async`), and
+finished replies (`Stop`, with the legacy `notify` callback as a deduplicated fallback).
+Do not manually alert for these events, ordinary progress updates, optional offers,
+subagent completion, or merely mentioning approval/confirmation in prose.
+
+Only if the user really must act and no supported input hook represents that pause,
+run this immediately before presenting the actionable request:
 
 ```text
-/usr/bin/python3 "$HOME/.codex/skills/notify-codex-attention/scripts/notify.py" --kind attention --message "<concise action>" --session-id "<thread-or-unique-id>"
+/usr/bin/python3 "$HOME/.codex/skills/notify-codex-attention/scripts/notify.py" --kind attention --message "<concise action>" --session-id "<actual thread id>"
 ```
 
-Resolve the command to the installation's canonical absolute path when invoking
-it so a narrowly scoped approval can be reused. Keep the message non-sensitive
-and at most 160 characters. Do not call it for permission approvals or a final
-response: the `PermissionRequest` hook owns approvals, while the global `notify`
-callback owns final questions and completed turns.
+Use the canonical installation path and real `CODEX_THREAD_ID` (or known current
+thread ID), never an invented shared ID. Keep text non-sensitive and <=160 chars.
+If identity is unavailable, skip the fallback. Run outside the sandbox when needed
+for macOS UI. Do not block the task or request an extra user approval solely to
+send a fallback alert if the existing narrow command permission is unavailable.
 
-The script captures the originating terminal application's bundle ID and shows a
-clickable Codex overlay that returns to that application, with
-`terminal-notifier` and AppleScript fallbacks. Never block the main task if
-delivery fails.
+Notifications are queued across processes and identified by session + turn + event.
+Submitting a new turn, interrupting, or returning from synchronous user input
+cancels obsolete queued alerts. Async input returns immediately; its return is not
+an acknowledgement. Completion means the reply ended, not that the whole task
+succeeded. Stop hooks can request continuation; a brief delay and new-turn
+cancellation reduce premature alerts but are not a confirmed-turn-completed API.
+
+For setup/maintenance, use `scripts/install_hooks.py` to preview, or `--apply` to
+merge hooks with a backup. Review new hooks in Codex `/hooks`; never write trust
+hashes. Preserve an existing global `notify` wrapper (including Computer Use).
+Specialized tool paths/clients may omit hooks; test on the actual client. The
+fallback remains available for unsupported input paths. See
+[implementation notes](references/event-routing.md) for sources and limitations.

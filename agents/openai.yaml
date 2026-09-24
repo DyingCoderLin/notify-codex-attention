@@ -1,6 +1,6 @@
 interface:
   display_name: "Codex Attention Notifications"
   short_description: "Clickable alert when Codex needs your input"
-  default_prompt: "Use $notify-codex-attention before asking me for a choice, input, or a manual UI action."
+  default_prompt: "Use $notify-codex-attention to maintain event-driven alerts or notify me of a required manual action without a matching hook."
 policy:
   allow_implicit_invocation: false
